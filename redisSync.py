@@ -1,12 +1,11 @@
 import argparse
 import redis
 import os
-import requests
 import json
 
 parser = argparse.ArgumentParser(description='Takes a list of redis keys')
-parser.add_argument('--redisSrc', dest='redisSrc', default='10.228.39.180', help='The host we get the redis data from')
-parser.add_argument('--redisDest', dest='redisDest', default='frontend.vag-devfe-01.vag-jfd.magic-technik.de', help='The host we write the redis data to')
+parser.add_argument('--redisSrc', dest='redisSrc', default='lnxv-ezpublish-01.lve-1.magic-technik.de', help='The host we get the redis data from')
+parser.add_argument('--redisDest', dest='redisDest', default='frontend.vag-jfd.magic-technik.de', help='The host we write the redis data to')
 args = parser.parse_args()
 
 # map arguments
@@ -16,14 +15,15 @@ redisDest = args.redisDest
 redisSrcHandle = redis.StrictRedis(host=redisSrc, port=6379, db=0)
 redisDestHandle = redis.StrictRedis(host=redisDest, port=6379, db=0)
 redisKeyPrefix = 'content:v1:de:de:live:'
+redisKeyPrefixBuzz = 'buzz:v1:de:de:live:'
 partialIndicator = '_partial'
 redisPartialFields = ['url']
 baseDir = os.path.dirname(os.path.realpath(__file__))
+keyListFilename = os.path.join(baseDir, 'keys.txt')
 
-# Parses the keys.txt file and writes url
+# Parses the _keys.txt file and writes url
 def read_redis_keys():
-    keyListFilename = os.path.join(baseDir, 'keys.txt')
-    return  [line.strip() for line in open(keyListFilename, 'r')]
+    return [line.strip() for line in open(keyListFilename, 'r')]
 
 def parse_for_partials(json_string):
     results = []
@@ -42,24 +42,45 @@ def parse_for_partials(json_string):
         obj = json.loads(json_string, object_hook=_check_url_value)
     return results
 
-def sync_redis_keys(keys):
+def sync_redis_keys(keys, isFullImport):
     referenced_keys = []
 
     for key in keys:
-        if key not in written_keys:
-            content = redisSrcHandle.get(redisKeyPrefix + key)
+        if isFullImport is False:
+            compoundKey = redisKeyPrefix + key
+        else:
+            compoundKey = key
+
+        if not str(compoundKey).startswith(redisKeyPrefix):
+            print 'Skipping %s' % compoundKey
+            continue
+
+        if compoundKey not in written_keys:
+            content = redisSrcHandle.get(compoundKey)
+
+            if not content:
+                print 'No content found for key %s' % compoundKey
+
             # print content
-            referenced_keys = referenced_keys + parse_for_partials(content)
-            print 'Writing key ' + key
-            # redisDestHandle.set(redisKeyPrefix + key, content)
-            written_keys.append(key)
+            if isFullImport is False:
+                referenced_keys = referenced_keys + parse_for_partials(content)
+            print 'Writing key ' + compoundKey
+            redisDestHandle.set(compoundKey, content)
+            written_keys.append(compoundKey)
 
     if referenced_keys:
-        sync_redis_keys(referenced_keys)
+        sync_redis_keys(referenced_keys, isFullImport)
 
 # Read in redis-keys
 written_keys = []
-keys = read_redis_keys()
+
+
+if not os.path.isfile(keyListFilename):
+    keys = redisSrcHandle.keys('*')
+else:
+    keys = read_redis_keys()
+
+print 'Found %d keys' % len(keys)
 print 'Redis Keys: \n' + '\n'.join(keys)
-sync_redis_keys(keys)
+sync_redis_keys(keys, not os.path.isfile(keyListFilename))
 
